@@ -20,15 +20,19 @@ It stops when: bounded iteration limit hit, metric reaches theoretical max, or 1
 
 ## Installation
 
-Copy the skill into your project's `.claude/skills/` directory:
-
 ```bash
 # From your project root
 mkdir -p .claude/skills/autoresearch
-cp autoresearch-skill/.claude/skills/autoresearch/SKILL.md .claude/skills/autoresearch/SKILL.md
+curl -o .claude/skills/autoresearch/SKILL.md \
+  https://raw.githubusercontent.com/igorvagun/autoresearch-skill/main/.claude/skills/autoresearch/SKILL.md
 ```
 
-Or copy the entire `.claude/skills/autoresearch/` directory into your project.
+Or clone and copy:
+
+```bash
+git clone https://github.com/igorvagun/autoresearch-skill.git
+cp -r autoresearch-skill/.claude/skills/autoresearch .claude/skills/
+```
 
 ## Usage
 
@@ -86,19 +90,78 @@ Metric: peak RSS MB (lower is better)
 Verify: python -c "import tracemalloc; tracemalloc.start(); exec(open('src/data_pipeline.py').read()); print(tracemalloc.get_traced_memory()[1] // 1024 // 1024)"
 ```
 
+### Compress prompt/config file
+
+```
+/autoresearch loop 15
+Goal: Reduce token count while preserving all rules
+Scope: prompts/system.md
+Metric: token count (lower is better)
+Verify: python -c "from transformers import AutoTokenizer; t=AutoTokenizer.from_pretrained('gpt2'); print(len(t.encode(open('prompts/system.md').read())))"
+```
+
 ## Real-World Results
 
-Used in the [Sentinel Immortal](https://github.com/igorvagun) project (S110), 10 autoresearch runs optimized 7 metrics:
+88 iterations across 9 targets in ~3 hours. 7 produced measurable improvements:
 
-| Metric | Before | After | Improvement |
-|--------|--------|-------|-------------|
-| soul.md tokens | 4,531 | 2,344 | -48% |
-| Search latency | 2,635ms | 130ms | -95% (20x) |
-| Bot startup | 19.6s | 4.0s | -80% (5x) |
-| Plugin import | 104ms | 40ms | -62% |
-| Sanitizer false positives | 2 | 0 | -100% |
-| BM25 relevance (25 queries) | 17 | 21 | +24% |
-| KG edges per fact | 0.64 | 0.89 | +39% |
+| # | Metric | Before | After | Improvement | Iterations |
+|---|--------|--------|-------|-------------|------------|
+| 1 | Test coverage | 35% | 93% | +58pp | 20/20 keeps |
+| 2 | Prompt tokens | 4,531 | 2,344 | -48% | 15/15 keeps |
+| 3 | Bot startup | 19.6s | 4.0s | 5x faster | 3/10 keeps |
+| 4 | Search latency | 2,635ms | 130ms | 20x faster | 7/15 keeps |
+| 5 | Sanitizer FPs | 2 | 0 | -100% | 2/2 keeps |
+| 6 | BM25 relevance | 17/25 | 21/25 | +24% | 4/15 keeps |
+| 7 | KG extraction | 0.64 | 0.89 | +39% | 1/1 keep |
+
+### Sample Iteration Logs
+
+**Prompt token compression (15/15 keeps):**
+
+| Iter | Tokens | Delta | Change |
+|------|--------|-------|--------|
+| 0 | 4,531 | — | Baseline |
+| 1 | 4,428 | -103 | Merge Personality into Tone section |
+| 2 | 4,200 | -228 | Condense 5 self-description subsections |
+| 3 | 3,779 | -421 | Compress 20 tool descriptions |
+| 4 | 3,527 | -252 | Tighten rules 9-16, remove examples |
+| 5 | 3,364 | -163 | Tighten rules 1-8 |
+| ... | ... | ... | ... |
+| 14 | 2,459 | -161 | Compress memory rules: 11 → 5 bullets |
+| 15 | 2,344 | -115 | Final pass on identity sections |
+
+Every iteration found something to compress — the skill systematically worked through each section.
+
+**Search latency (7/15 keeps, 20x speedup):**
+
+| Iter | Latency | Delta | Status | Change |
+|------|---------|-------|--------|--------|
+| 0 | 2,635ms | — | baseline | Hybrid BM25 + cosine + BGE reranker |
+| 2 | 2,538ms | -94ms | keep | Reduce rerank pool 30→15 |
+| 5 | 2,484ms | -15ms | keep | BM25 candidates 120→60 |
+| **7** | **157ms** | **-2,311ms** | **keep** | **Eager reranker init (cold-start fix)** |
+| 11 | 130ms | -17ms | keep | Confidence pool 50→20 |
+| 12-14 | — | — | discard | Diminishing returns |
+
+Iteration 7 found a 2.3-second cold-start penalty in lazy reranker initialization — a bottleneck hiding in plain sight for months.
+
+## When NOT to Use
+
+- **Subjective quality** — "make the UI look better" has no number
+- **Multi-dimensional** — optimizing 4 metrics simultaneously needs a different approach
+- **Slow verify commands** — if measurement takes >5 minutes, expect agent stalls
+- **Non-deterministic metrics** — if the number varies ±20% between runs, signal drowns in noise
+- **Architecture changes** — autoresearch makes *atomic* changes, not system redesigns
+
+## Lessons Learned
+
+From running 88 iterations across 9 targets:
+
+1. **Verify command speed matters** — under 60s works well. Over 5 min is risky. One target (reinforcement scoring, 30 min/iteration) stalled the agent.
+2. **Perfect keep rate is possible** — the prompt compression achieved 15/15 keeps because every section had fat to trim. When the optimization surface is rich, the skill rarely misses.
+3. **Breakthroughs are unpredictable** — the biggest win (2,311ms latency drop) came from a single line change on iteration 7. The skill found it by systematically exhausting smaller optimizations first.
+4. **Plateau detection works** — after 3-5 consecutive discards, the skill correctly identifies diminishing returns and moves on.
+5. **Simpler IS better** — several "keep" iterations removed code complexity while maintaining the same metric. The skill correctly prefers simplicity.
 
 ## How It Works
 
